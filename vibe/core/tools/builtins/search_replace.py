@@ -257,7 +257,7 @@ class SearchReplace(
 
         for i, (search, replace) in enumerate(blocks, 1):
             search_text = search
-            
+
             # Apply whitespace normalization if enabled
             if normalize_whitespace:
                 search_text = SearchReplace._normalize_whitespace(search)
@@ -265,9 +265,9 @@ class SearchReplace(
                 found_in_normalized = search_text in current_content_normalized
             else:
                 found_in_normalized = False
-            
+
             found_exact = search in current_content
-            
+
             if not found_exact and not found_in_normalized:
                 context = SearchReplace._find_search_context(current_content, search, debug_context_lines)
                 fuzzy_context = SearchReplace._find_fuzzy_match_context(
@@ -294,14 +294,14 @@ class SearchReplace(
 
                 errors.append(error_msg)
                 continue
-            
+
             # If found in normalized version, use that for replacement
             if found_in_normalized:
                 # Find the actual position in original content
                 normalized_lines = current_content_normalized.split('\n')
                 search_lines = search_text.split('\n')
                 original_lines = current_content.split('\n')
-                
+
                 # Find matching line range
                 for start_idx in range(len(normalized_lines) - len(search_lines) + 1):
                     match = True
@@ -327,7 +327,7 @@ class SearchReplace(
                     warnings.append(warning_msg)
 
                 current_content = current_content.replace(search, replace, 1)
-            
+
             applied += 1
 
         return BlockApplyResult(
@@ -340,13 +340,13 @@ class SearchReplace(
         """Normalize whitespace for more flexible matching."""
         lines = text.split('\n')
         normalized_lines = []
-        
+
         for line in lines:
             # Preserve indentation but normalize trailing whitespace
             stripped = line.rstrip()
             # Keep leading whitespace (indentation) but remove trailing
             normalized_lines.append(stripped)
-        
+
         return '\n'.join(normalized_lines)
 
     @final
@@ -547,12 +547,12 @@ class SearchReplace(
         """Analyze potential line ending mismatches."""
         # Note: When reading files in text mode, Python automatically converts \r\n to \n on Unix
         # So we can only detect line ending issues in the search text itself
-        
+
         search_has_crlf = "\r\n" in search_text
         search_has_lf = "\n" in search_text and not search_has_crlf
-        
+
         messages = []
-        
+
         # Check if search text has mixed line endings
         if search_has_crlf and search_has_lf:
             messages.append("Search text has mixed line endings (both \\r\\n and \\n)")
@@ -560,11 +560,11 @@ class SearchReplace(
             messages.append("Search text uses Windows line endings (\\r\\n)")
         elif search_has_lf:
             messages.append("Search text uses Unix line endings (\\n)")
-        
+
         # Check for trailing whitespace issues
         search_lines = search_text.split("\n")
         trailing_whitespace_lines = [i+1 for i, line in enumerate(search_lines) if line != line.rstrip() and line.strip()]
         if trailing_whitespace_lines:
             messages.append(f"Search text has trailing whitespace on lines: {trailing_whitespace_lines}")
-        
+
         return "; ".join(messages) if messages else ""
