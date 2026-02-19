@@ -229,16 +229,26 @@ class SearchReplace(
 
     async def _write_file(self, file_path: Path, content: str) -> None:
         try:
+            # Strip trailing whitespace from each line while preserving line structure
+            content_to_write = self._strip_trailing_whitespace(content)
+            
             async with await anyio.Path(file_path).open(
                 mode="w", encoding="utf-8"
             ) as f:
-                await f.write(content)
+                await f.write(content_to_write)
         except PermissionError:
             raise ToolError(f"Permission denied writing to file: {file_path}")
         except OSError as e:
             raise ToolError(f"OS error writing to {file_path}: {e}") from e
         except Exception as e:
             raise ToolError(f"Unexpected error writing to {file_path}: {e}") from e
+
+    @staticmethod
+    def _strip_trailing_whitespace(content: str) -> str:
+        """Strip trailing whitespace from each line while preserving line structure."""
+        lines = content.split('\n')
+        stripped_lines = [line.rstrip() for line in lines]
+        return '\n'.join(stripped_lines)
 
     @final
     @staticmethod
