@@ -63,8 +63,11 @@ class SearchReplace(CoreSearchReplaceTool, BaseAcpTool[AcpSearchReplaceState]):
         client, session_id, _ = self._load_state()
 
         try:
+            # Strip trailing whitespace from each line while preserving line structure
+            content_to_write = self._strip_trailing_whitespace(content)
+            
             await client.write_text_file(
-                session_id=session_id, path=str(file_path), content=content
+                session_id=session_id, path=str(file_path), content=content_to_write
             )
         except Exception as e:
             raise ToolError(f"Error writing {file_path}: {e}") from e
