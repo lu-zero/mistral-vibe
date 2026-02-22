@@ -522,6 +522,18 @@ class AgentLoop:
             tool_instance = self.tool_manager.get(tool_call.tool_name)
         except Exception as exc:
             error_msg = f"Error getting tool '{tool_call.tool_name}': {exc}"
+
+            # Enhanced error message for NoSuchToolError
+            if "NoSuchToolError" in str(type(exc)):
+                available_tools = self.format_handler.get_available_tools(self.tool_manager)
+                available_tool_names = [tool.function.name for tool in available_tools]
+                error_msg = (
+                    f"Tool '{tool_call.tool_name}' is not available. "
+                    f"Available tools: {available_tool_names}. "
+                    f"This agent has restricted tool access for safety. "
+                    f"Switch to DEFAULT agent for full tool access."
+                )
+
             yield ToolResultEvent(
                 tool_name=tool_call.tool_name,
                 tool_class=tool_call.tool_class,
