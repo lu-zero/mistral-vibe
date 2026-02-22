@@ -871,6 +871,25 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _show_help(self) -> None:
         help_text = self.commands.get_help_text()
+
+        # Add tool availability information
+        if self.agent_loop:
+            available_tools = self.agent_loop.tool_manager.available_tools
+            tool_names = sorted(available_tools.keys())
+            current_agent = self.agent_loop.agent_profile.name
+
+            tools_info = f"""
+## Available Tools ({len(tool_names)} total)
+
+**Current Agent**: `{current_agent}`
+
+### Tool List:
+{', '.join(tool_names)}
+
+**Note**: Some tools may require approval. Switch to DEFAULT agent for full tool access.
+"""
+            help_text += tools_info
+
         await self._mount_and_scroll(UserCommandMessage(help_text))
 
     async def _show_status(self) -> None:
@@ -1376,7 +1395,9 @@ class VibeApp(App):  # noqa: PLR0904
     def _update_profile_widgets(self, profile: AgentProfile) -> None:
         if self._chat_input_container:
             self._chat_input_container.set_safety(profile.safety)
-            self._chat_input_container.set_agent_name(profile.display_name.lower())
+            # Get tool count for UI display
+            tool_count = len(self.agent_loop.tool_manager.available_tools) if self.agent_loop else 0
+            self._chat_input_container.set_agent_name(profile.display_name.lower(), tool_count)
 
     async def _cycle_agent(self) -> None:
         new_profile = self.agent_loop.agent_manager.next_agent(

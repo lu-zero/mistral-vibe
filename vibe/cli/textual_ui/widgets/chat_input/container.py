@@ -203,11 +203,15 @@ class ChatInputContainer(Vertical):
         if safety in SAFETY_BORDER_CLASSES:
             input_box.add_class(SAFETY_BORDER_CLASSES[safety])
 
-    def set_agent_name(self, name: str) -> None:
+    def set_agent_name(self, name: str, tool_count: int | None = None) -> None:
         self._agent_name = name
 
         try:
             input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
-            input_box.border_title = name
+            if tool_count is not None:
+                border_title = f"{name} ({tool_count} tools)"
+            else:
+                border_title = name
+            input_box.border_title = border_title
         except Exception:
             pass
