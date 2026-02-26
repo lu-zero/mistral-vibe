@@ -231,7 +231,7 @@ class SearchReplace(
         try:
             # Strip trailing whitespace from each line while preserving line structure
             content_to_write = self._strip_trailing_whitespace(content)
-            
+
             async with await anyio.Path(file_path).open(
                 mode="w", encoding="utf-8"
             ) as f:
@@ -265,24 +265,51 @@ class SearchReplace(
         warnings: list[str] = []
         current_content = content
 
+        # Cache normalized content if whitespace normalization is enabled
+        cached_normalized_content = None
+
         for i, (search, replace) in enumerate(blocks, 1):
             search_text = search
+            found_exact = search in current_content
+            found_in_normalized = False
 
             # Apply whitespace normalization if enabled
             if normalize_whitespace:
-                search_text = SearchReplace._normalize_whitespace(search)
-                current_content_normalized = SearchReplace._normalize_whitespace(current_content)
-                found_in_normalized = search_text in current_content_normalized
-            else:
-                found_in_normalized = False
+                # Use cached normalized content if available
+                if cached_normalized_content is None:
+                    cached_normalized_content = SearchReplace._normalize_whitespace(current_content)
 
-            found_exact = search in current_content
+                search_text = SearchReplace._normalize_whitespace(search)
+                found_in_normalized = search_text in cached_normalized_content
+
+            # Early exit optimization: if exact match found and no fuzzy matching needed, skip expensive operations
+            if found_exact and not normalize_whitespace:
+                # Fast path for exact matches
+                occurrences = current_content.count(search)
+                if occurrences > 1:
+                    warning_msg = (
+                        f"Search text in block {i} appears {occurrences} times in the file. "
+                        f"Only the first occurrence will be replaced. Consider making your "
+                        f"search pattern more specific to avoid unintended changes."
+                    )
+                    warnings.append(warning_msg)
+
+                current_content = current_content.replace(search, replace, 1)
+                applied += 1
+                # Invalidate cache since content changed
+                cached_normalized_content = None
+                continue
 
             if not found_exact and not found_in_normalized:
                 context = SearchReplace._find_search_context(current_content, search, debug_context_lines)
-                fuzzy_context = SearchReplace._find_fuzzy_match_context(
-                    current_content, search, fuzzy_threshold
-                )
+
+                # Only perform expensive fuzzy matching if threshold is high enough
+                if fuzzy_threshold >= 0.8:
+                    fuzzy_context = SearchReplace._find_fuzzy_match_context(
+                        current_content, search, fuzzy_threshold
+                    )
+                else:
+                    fuzzy_context = None
 
                 error_msg = (
                     f"SEARCH/REPLACE block {i} failed: Search text not found in {filepath}\n"
@@ -307,26 +334,38 @@ class SearchReplace(
 
             # If found in normalized version, use that for replacement
             if found_in_normalized:
-                # Find the actual position in original content
-                normalized_lines = current_content_normalized.split('\n')
+                # Use cached normalized content
+                normalized_lines = cached_normalized_content.split('\n')
                 search_lines = search_text.split('\n')
                 original_lines = current_content.split('\n')
 
-                # Find matching line range
-                for start_idx in range(len(normalized_lines) - len(search_lines) + 1):
+                # Find matching line range with early exit
+                content_len = len(normalized_lines)
+                search_len = len(search_lines)
+
+                for start_idx in range(content_len - search_len + 1):
+                    # Quick check: compare first and last lines first for early mismatch detection
+                    if (normalized_lines[start_idx].rstrip() != search_lines[0].rstrip() or
+                        normalized_lines[start_idx + search_len - 1].rstrip() != search_lines[-1].rstrip()):
+                        continue
+
+                    # Full match verification
                     match = True
-                    for j, (norm_line, search_line) in enumerate(zip(normalized_lines[start_idx:start_idx+len(search_lines)], search_lines)):
-                        if norm_line.rstrip() != search_line.rstrip():
+                    for j in range(search_len):
+                        if normalized_lines[start_idx + j].rstrip() != search_lines[j].rstrip():
                             match = False
                             break
+
                     if match:
                         # Replace in original content
                         replacement_lines = replace.split('\n')
-                        new_lines = original_lines[:start_idx] + replacement_lines + original_lines[start_idx+len(search_lines):]
+                        new_lines = original_lines[:start_idx] + replacement_lines + original_lines[start_idx + search_len:]
                         current_content = '\n'.join(new_lines)
+                        # Invalidate cache since content changed
+                        cached_normalized_content = None
                         break
             else:
-                # Standard replacement
+                # Standard replacement (shouldn't reach here due to early exit, but kept for safety)
                 occurrences = current_content.count(search)
                 if occurrences > 1:
                     warning_msg = (
@@ -337,6 +376,8 @@ class SearchReplace(
                     warnings.append(warning_msg)
 
                 current_content = current_content.replace(search, replace, 1)
+                # Invalidate cache since content changed
+                cached_normalized_content = None
 
             applied += 1
 
@@ -399,6 +440,10 @@ class SearchReplace(
         if not non_empty_search:
             return None
 
+        # Performance optimization: quick length check
+        if window_size > len(content_lines):
+            return None
+
         first_anchor = non_empty_search[0]
         last_anchor = (
             non_empty_search[-1] if len(non_empty_search) > 1 else first_anchor
@@ -407,36 +452,52 @@ class SearchReplace(
         candidate_starts = set()
         spread = 10  # Increased from 5 to 10 for better coverage
 
-        # Look for anchor lines in content
+        # Look for anchor lines in content with early exit
         for i, line in enumerate(content_lines):
             if first_anchor in line or last_anchor in line:
                 start_min = max(0, i - spread)
                 start_max = min(len(content_lines) - window_size + 1, i + spread + 1)
                 for s in range(start_min, start_max):
                     candidate_starts.add(s)
+                    # Early exit if we have enough candidates
+                    if len(candidate_starts) > 50:  # Limit candidate positions for performance
+                        break
+                if len(candidate_starts) > 50:
+                    break
 
         if not candidate_starts:
-            # If no anchors found, search more broadly
-            max_positions = min(len(content_lines) - window_size + 1, 200)  # Increased from 100 to 200
+            # If no anchors found, search more broadly but with limits
+            max_positions = min(len(content_lines) - window_size + 1, 100)  # Reduced from 200 for performance
             candidate_starts = set(range(0, max_positions))
 
         best_match = None
         best_similarity = 0.0
 
+        # Pre-compute normalized versions once
+        search_normalized = "\n".join(line.rstrip() for line in search_lines)
+
         for start in candidate_starts:
             end = start + window_size
             window_text = "\n".join(content_lines[start:end])
+            window_normalized = "\n".join(line.rstrip() for line in content_lines[start:end])
 
             # Try both exact and normalized matching
             matcher = difflib.SequenceMatcher(None, search_text, window_text)
             similarity = matcher.ratio()
 
-            # Also try with whitespace normalization for better matching
-            search_normalized = "\n".join(line.rstrip() for line in search_lines)
-            window_normalized = "\n".join(line.rstrip() for line in content_lines[start:end])
+            # Use pre-computed normalized versions
             matcher_normalized = difflib.SequenceMatcher(None, search_normalized, window_normalized)
             similarity_normalized = matcher_normalized.ratio()
             similarity = max(similarity, similarity_normalized)
+
+            # Early exit if we find a perfect match
+            if similarity == 1.0:
+                return FuzzyMatch(
+                    similarity=similarity,
+                    start_line=start + 1,  # 1-based line numbers
+                    end_line=end,
+                    text=window_text,
+                )
 
             if similarity >= threshold and similarity > best_similarity:
                 best_similarity = similarity
@@ -446,6 +507,10 @@ class SearchReplace(
                     end_line=end,
                     text=window_text,
                 )
+
+                # Early exit if we have a very good match
+                if best_similarity >= 0.95:
+                    break
 
         return best_match
 
