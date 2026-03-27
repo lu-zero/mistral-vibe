@@ -43,8 +43,10 @@ from vibe.core.middleware import (
     TurnLimitMiddleware,
     make_plan_agent_reminder,
 )
+from vibe.core.memories.middleware import MemoryLoadingMiddleware
 from vibe.core.plan_session import PlanSession
 from vibe.core.prompts import UtilityPrompt
+from vibe.core.memories.manager import MemoryManager
 from vibe.core.rewind import RewindManager
 from vibe.core.session.session_logger import SessionLogger
 from vibe.core.session.session_migration import migrate_sessions_entrypoint
@@ -219,6 +221,7 @@ class AgentLoop:
             save_messages=self._save_messages,
             reset_session=self._reset_session,
         )
+        self.memory_manager = MemoryManager(self.session_logger.session_dir)
         self._teleport_service: TeleportService | None = None
 
         thread = Thread(
@@ -413,6 +416,11 @@ class AgentLoop:
     def _setup_middleware(self) -> None:
         """Configure middleware pipeline for this conversation."""
         self.middleware_pipeline.clear()
+
+        # Add memory loading middleware - should run early to inject memories into context
+        self.middleware_pipeline.add(
+            MemoryLoadingMiddleware(lambda: self.memory_manager)
+        )
 
         if self._max_turns is not None:
             self.middleware_pipeline.add(TurnLimitMiddleware(self._max_turns))
@@ -685,6 +693,21 @@ class AgentLoop:
             return
 
         decision: ToolDecision | None = None
+        
+        # Load tool-specific memories before executing the tool
+        tool_memories = self.memory_manager.get_memories_for_trigger("tool_use", tool_call.tool_name)
+        if tool_memories:
+            memory_messages = self.memory_manager.convert_to_llm_messages(tool_memories)
+            # Insert memories at the beginning of context (after system message)
+            if len(self.messages) > 0:
+                insert_pos = 1
+                for i, msg in enumerate(self.messages):
+                    if msg.role == "system":
+                        insert_pos = i + 1
+                        break
+                for msg in reversed(memory_messages):
+                    self.messages.insert(insert_pos, msg)
+
         try:
             decision = await self._should_execute_tool(
                 tool_instance, tool_call.validated_args, tool_call.call_id
@@ -1215,6 +1238,14 @@ class AgentLoop:
             )
 
             self.stats.context_tokens = actual_context_tokens
+
+            # Load "always" memories after compaction
+            always_memories = self.memory_manager.get_memories_for_trigger("always")
+            if always_memories:
+                memory_messages = self.memory_manager.convert_to_llm_messages(always_memories)
+                # Insert memories after system message
+                for msg in memory_messages:
+                    self.messages.insert(1, msg)
 
             self._reset_session()
             await self.session_logger.save_interaction(
