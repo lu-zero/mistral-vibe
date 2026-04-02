@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from vibe.core.middleware import ConversationMiddleware, MiddlewareResult
-from vibe.core.types import ConversationContext
+from vibe.core.middleware import ConversationContext, ConversationMiddleware, MiddlewareResult
+from vibe.core.memories.manager import MemoryManager
 
 
 class MemoryLoadingMiddleware(ConversationMiddleware):
