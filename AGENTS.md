@@ -28,6 +28,7 @@ Before architecture-affecting changes, read [0002 Ownership Boundaries](docs/adr
 | Adding state shared by every channel or session of the process, a remote value refreshed for all sessions, or an app-server entry point | [0019 Process Services](docs/adr/0019-process-services.md) |
 | Calling the runtime from the app server, adding a direct runtime call or a `vibe.*` extension item, the Session API path switch, the target runtime opt-in or a Session's saved runtime, or moving work between the app server and the runtime | [0020 Runtime Access Through the Session API](docs/adr/0020-runtime-access-through-the-session-api.md) |
 | Registry skill resolution, the machine's skill store, its sync, leases or cleanup, or the sandbox copy of registry skills | [0021 Registry Skills Resolution and Store](docs/adr/0021-registry-skills-resolution-and-store.md) |
+| A plugin MCP server or hook reaching its own session outside a turn (enqueue, loopback RPC), or any new plugin-facing invocation mechanism | [0022 Plugin Session RPC Channel](docs/adr/0022-plugin-session-rpc-channel.md) |
 
 Superseded records: [0003](docs/adr/0003-event-driven-agent-loop.md) → 0009; [0011](docs/adr/0011-unified-harness-backend.md) → 0002. Their paths remain for existing links.
 

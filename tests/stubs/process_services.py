@@ -24,6 +24,7 @@ from vibe.app_server._model_catalog_service import ModelCatalogService
 from vibe.app_server._open_sessions import OpenSessions
 from vibe.app_server._org_config_service import OrgConfigService
 from vibe.app_server._platform_credential_lenders import PlatformCredentialLenders
+from vibe.app_server._plugin_session_rpc import PluginSessionRPC
 from vibe.app_server._process_services import ProcessServices
 from vibe.app_server._skill_shadows import ShadowWarnings
 from vibe.app_server._skill_store_cleanup import SkillStoreCleanup
@@ -162,6 +163,7 @@ def fake_process_services(
     server = org_server or FakeOrgConfigServer()
     catalog_server = model_catalog_server or FakeModelCatalogServer()
     background = BackgroundWorker() if background is None else background
+    open_sessions = OpenSessions()
     return ProcessServices(
         org_config=OrgConfigService(fetch=server.fetch, clock=clock, **org_config),
         connector_catalog=connector_catalog or SharedConnectorCatalog(),
@@ -173,7 +175,7 @@ def fake_process_services(
         skill_shadows=ShadowWarnings(),
         missing_models=MissingModelWarnings(),
         skill_store=SkillStoreCleanup(background),
-        open_sessions=OpenSessions(),
+        open_sessions=open_sessions,
         storage_usage=StorageUsageService(background),
         config_changes=ConfigChanges(),
         # Never asks the OS: a test about keeping awake passes its own.
@@ -183,6 +185,8 @@ def fake_process_services(
         ),
         platform_credential_lenders=PlatformCredentialLenders(),
         left_turns=LeftTurns(),
+        # Never bound to a port in tests unless a test starts it explicitly.
+        plugin_session_rpc=PluginSessionRPC(open_sessions),
         # Looked up per fetch, so a test can patch the server's answers.
         model_catalog=ModelCatalogService(
             fetch=lambda api_base, credentials: catalog_server.fetch(

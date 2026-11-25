@@ -928,7 +928,7 @@ command = "~/.vibe/hooks/export.sh"
 
 | Type | When it runs |
 |---|---|
-| `pre_agent` | Once per turn, after the user sends a message and before the model reads it. |
+| `pre_agent` | Once per turn, after the user sends a message and before the model reads it. A hook may also extend the turn's initial message via `hook_specific_output.additional_context` (or rewrite it via `hook_specific_output.prompt`); the payload names the `session_id`, and plugin hooks also get `PLUGIN_DATA`. |
 | `pre_llm` | Before each call to the model. A turn that uses tools calls the model several times, so it runs several times per turn: keep it fast. |
 | `post_llm` | After each model response, before Vibe acts on it (before its tools run, or before the answer is final), including responses that only call tools. `post_agent` still runs afterwards on the final answer. The response streams while it runs. |
 | `post_agent` | Once per turn, after the agent finishes responding (no pending tool calls). |

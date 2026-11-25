@@ -175,6 +175,30 @@ Rules:
 - The `command` for stdio servers is resolved relative to the plugin root
   when it is a bare filename; absolute paths are used as-is.
 
+### Reaching the session from a stdio MCP server (enqueue a turn)
+
+A stdio MCP server bound to a session also receives, in `env`:
+
+- `VIBE_SESSION_ID` — the id of the session this server is bound to.
+- `VIBE_SESSION_RPC_HOST` / `VIBE_SESSION_RPC_PORT` — a loopback JSON-RPC
+  listener owned by the Vibe process (`127.0.0.1` only).
+- `VIBE_SESSION_RPC_TOKEN` — a per-session bearer token, revoked when the
+  session closes.
+
+The listener speaks newline-delimited JSON-RPC 2.0 and allows exactly one
+method, `session/turn/enqueue`, on the token's session — the token picks the
+session, any `sessionId` in the params is ignored. Send one request per line:
+
+```
+{"jsonrpc":"2.0","id":1,"method":"session/turn/enqueue","token":"...","params":{"entries":[{"role":"user","content":[{"type":"text","text":"..."}]}]}}
+```
+
+The enqueued message is an ordinary user message: it can start a turn on an
+idle session, but it cannot approve a permission, change configuration, or run
+a slash command. Treat anything you enqueue as untrusted context. This is the
+plugin-reachable way to deliver content into an idle session; for content
+delivered when a turn starts, use a `pre_agent` hook instead (Step 5).
+
 ## Step 5 — Hooks (optional, Vibe extension only)
 
 Place hooks in `ai.mistral.vibe/hooks.toml`. Format is identical to the Vibe
@@ -203,7 +227,11 @@ command = "python lint_session.py"   # reads `cwd` from stdin, then lints it
 ```
 
 Plugin hooks run after the project's own `hooks.toml` and before the user's
-`~/.vibe/hooks.toml` (project plugins), or after it (user plugins).
+`~/.vibe/hooks.toml` (project plugins), or after it (user plugins). A
+`pre_agent` hook runs once per turn before the model reads the message —
+including a turn that started because something enqueued one — and may extend
+the message via `hook_specific_output.additional_context`; its stdin payload
+includes `session_id`.
 
 Limits:
 - Maximum 128 hooks per plugin.

@@ -683,6 +683,7 @@ if TYPE_CHECKING:
     from vibe.app_server._open_sessions import OpenSessions
     from vibe.app_server._org_config_service import OrgConfigKey
     from vibe.app_server._plugin_mcp import PluginMCPCatalog
+    from vibe.app_server._plugin_session_rpc import PluginSessionRPC
     from vibe.app_server._plugins import SessionPlugins, UnifiedPluginProvider
     from vibe.app_server._process_services import ProcessServices
     from vibe.app_server._process_settings import ProcessSettings
@@ -709,12 +710,18 @@ def merge_plugin_mcp_into_catalog(
     plugin_mcp: PluginMCPCatalog,
     *,
     authentication: MCPAuthenticationService,
+    session_id: str | None = None,
+    plugin_rpc: PluginSessionRPC | None = None,
 ) -> ResolvedMCPCatalog:
     """Merge plugin-owned MCP servers the harness can run into a config catalog.
 
     A plugin source whose name a configured server already owns is skipped, so
     the harness runs the config entry. The plugin server's name never reaches
     the merged catalog, and ``plugin_owned_names`` reflects that.
+
+    With ``session_id`` and ``plugin_rpc``, a stdio plugin server's environment
+    also names the loopback channel (``VIBE_SESSION_RPC_*``) that lets it
+    enqueue a turn on this session, so a plugin can reach an idle session.
     """
     from vibe.app_server._session_backend_port import (
         ResolvedMCPCatalog as _ResolvedMCPCatalog,
@@ -731,6 +738,9 @@ def merge_plugin_mcp_into_catalog(
         reference = authentication.reference_for(server, owner="plugin")
         if isinstance(server, MCPStdio):
             argv = server.argv()
+            env = dict(server.env)
+            if session_id is not None and plugin_rpc is not None:
+                env.update(plugin_rpc.session_env(session_id))
             plugin_servers.append(
                 ResolvedMCPServerConfig(
                     name=source.name,
@@ -741,7 +751,7 @@ def merge_plugin_mcp_into_catalog(
                     cwd=(
                         Path(server.cwd).expanduser().resolve() if server.cwd else None
                     ),
-                    env=server.env,
+                    env=env,
                     authorization=reference,
                     prompt=server.prompt,
                     startup_timeout_s=server.startup_timeout_sec,
@@ -1568,7 +1578,7 @@ class HarnessProcess:
         context.org_config_report.loaded = first.considered or ""
         return context
 
-    async def _build_unified_session_context_once(  # noqa: PLR0914, PLR0915 - composition root
+    async def _build_unified_session_context_once(  # noqa: PLR0912, PLR0914, PLR0915 - composition root
         self,
         options: SessionOptions,
         session_config: _SessionConfig,
@@ -2000,6 +2010,10 @@ class HarnessProcess:
         plugin_hooks, plugin_hook_issues = _runnable_plugin_hooks(plugins)
         mcp_catalog = await self.mcp_catalog.resolve_catalog(config_orchestrator)
         if config_orchestrator.config.enable_mcp:
+            if any(True for _ in plugin_mcp.sources()):
+                # The loopback channel plugin MCP servers use to enqueue a
+                # turn on their session starts before the catalog names it.
+                await self.services.plugin_session_rpc.ensure_started()
             mcp_catalog = merge_plugin_mcp_into_catalog(
                 mcp_catalog, plugin_mcp, authentication=self.mcp_authentication
             )
@@ -2522,6 +2536,7 @@ class HarnessProcess:
             plugins=plugins,
             plugin_provider=plugin_provider,
             plugin_mcp=plugin_mcp,
+            plugin_session_rpc=self.services.plugin_session_rpc,
             requested_plugins=tuple(requested_plugin_definitions(plugins)),
             config_orchestrator=config_orchestrator,
             harness_files=harness_files,
@@ -2785,6 +2800,7 @@ class HarnessProcess:
             sandbox_skills=self._sandbox_skills,
             client_tool_groups=self._client_tool_groups,
             credentials=self.credentials,
+            plugin_session_rpc=self.services.plugin_session_rpc,
         )
         # The process-wide runner checks the caller's session against these.
         provider.observe_bind_commits(self._remember_bound_plugins)

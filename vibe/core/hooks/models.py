@@ -38,6 +38,7 @@ STRICT_HOOK_TYPES = frozenset({
     HookType.POST_LLM,
 })
 
+
 # Hooks the app server fires itself, outside the engine's turn.
 HOST_HOOK_TYPES = frozenset({
     HookType.NOTIFICATION,

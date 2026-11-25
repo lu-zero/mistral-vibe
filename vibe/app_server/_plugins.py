@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import shutil
 from types import MappingProxyType
@@ -98,6 +100,7 @@ if TYPE_CHECKING:
         SessionPluginProjection,
     )
     from vibe.app_server._plugin_mcp import PluginMCPCatalog
+    from vibe.app_server._plugin_session_rpc import PluginSessionRPC
     from vibe.app_server._sandbox_skills import SandboxSkills
     from vibe.core.config.models import MCPServer
     from vibe.core.platform_auth import PlatformCredentialFactory
@@ -338,6 +341,7 @@ class UnifiedPluginProvider:
         client_tool_groups: Callable[[SessionPlugins], list[RustToolGroupDefinition]]
         | None = None,
         credentials: PlatformCredentialFactory | None = None,
+        plugin_session_rpc: PluginSessionRPC | None = None,
     ) -> None:
         self._plugins_root = Path(storage_root).expanduser().resolve() / "plugins"
         # Kept so ``plugin/reload`` reads the library plugins of the same account.
@@ -366,7 +370,11 @@ class UnifiedPluginProvider:
         # the copies of the skills there.
         self._sandbox_skills = sandbox_skills
         self._client_tool_groups = client_tool_groups
+        self._plugin_session_rpc = plugin_session_rpc
         self._bound: dict[str, SessionPlugins] = {}
+        # The persistent per-session connections that keep plugin stdio MCP
+        # servers alive (and able to reach the loopback channel) while idle.
+        self._plugin_rpc_stacks: dict[str, AsyncExitStack] = {}
         # The set each session started with, which a re-pin does not replace.
         self._first_bound: dict[str, SessionPlugins] = {}
         self._binding: set[str] = set()
@@ -548,6 +556,14 @@ class UnifiedPluginProvider:
                     logger.warning(
                         "Failed to bind plugin client context", exc_info=True
                     )
+            try:
+                await self._start_plugin_session_rpc(session_id, bound)
+            except Exception:
+                logger.warning(
+                    "Failed to start the plugin session RPC servers of session %r",
+                    session_id,
+                    exc_info=True,
+                )
         finally:
             # CancelledError is not an Exception, so without the finally a bind
             # cancelled mid-await would skip this tail entirely.
@@ -693,9 +709,66 @@ class UnifiedPluginProvider:
             return
         await self._release(session_id)
 
+    async def _start_plugin_session_rpc(
+        self, session_id: str, bound: SessionPlugins
+    ) -> None:
+        """Keep each plugin stdio MCP server running for the session's life.
+
+        The harness opens those processes only while it uses them, and a
+        session that went idle never starts a turn — so the process that can
+        enqueue one on the idle session must live on its own. It runs here,
+        with the loopback channel's env (``VIBE_SESSION_RPC_*``) added, and
+        dies with the session's bind. The harness-spawned copy gets the same
+        env through the MCP catalog, so both can enqueue on one channel.
+        """
+        rpc = self._plugin_session_rpc
+        if rpc is None:
+            return
+        from vibe.core.tools.mcp.tools import build_stdio_params, enter_stdio_session
+
+        servers = [
+            definition.server
+            for definition in bound.materialized.resolution.mcp_servers
+            if isinstance(definition.server, MCPStdio)
+        ]
+        if not servers:
+            return
+        await rpc.ensure_started()
+        extra_env = rpc.session_env(session_id)
+        previous = self._plugin_rpc_stacks.pop(session_id, None)
+        if previous is not None:
+            await previous.aclose()
+        stack = AsyncExitStack()
+        try:
+            for server in servers:
+                argv = server.argv()
+                if not argv:
+                    continue
+                env = {**os.environ, **dict(server.env or {}), **extra_env}
+                params = build_stdio_params(argv, env=env, cwd=server.cwd)
+                await enter_stdio_session(
+                    stack, params, init_timeout=server.startup_timeout_sec
+                )
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._plugin_rpc_stacks[session_id] = stack
+
     async def _release(self, session_id: str) -> None:
         self._bound.pop(session_id, None)
         self._first_bound.pop(session_id, None)
+        stack = self._plugin_rpc_stacks.pop(session_id, None)
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:
+                logger.warning(
+                    "Failed to stop the plugin session RPC servers of session %r",
+                    session_id,
+                    exc_info=True,
+                )
+        if self._plugin_session_rpc is not None:
+            self._plugin_session_rpc.revoke_session(session_id)
         for observer in self._release_observers:
             try:
                 await observer(session_id)

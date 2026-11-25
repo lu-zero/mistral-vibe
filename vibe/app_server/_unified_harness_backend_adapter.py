@@ -272,6 +272,7 @@ from vibe.app_server._open_sessions import OpenSessions
 from vibe.app_server._org_config_service import OrgConfigKey, OrgConfigService
 from vibe.app_server._patch import apply_json_patch, make_json_patch
 from vibe.app_server._plugin_mcp import PluginMCPCatalog
+from vibe.app_server._plugin_session_rpc import PluginSessionRPC
 from vibe.app_server._plugins import (
     PLUGIN_HOOKS_RELOAD_NOTICE,
     PluginReloadUnavailableError,
@@ -1332,6 +1333,9 @@ class UnifiedSessionContext:
     # re-creating it or touching the harness.
     mcp_authorization_adapter: Any = None
     mcp_catalog_service: Any = None
+    # The loopback channel a plugin's MCP server uses to enqueue a turn on
+    # this session; None outside a process that runs one.
+    plugin_session_rpc: PluginSessionRPC | None = None
     connector_catalog: ResolvedConnectorCatalog | None = None
     connector_selection: ResolvedConnectorSelection | None = None
     connector_catalog_service: ConnectorCatalogService | None = None
@@ -5061,6 +5065,31 @@ class UnifiedHarnessBackendHostAdapter:  # noqa: PLR0904 - implements app-server
             return SessionArchiveResponse(archived_at=metadata_archived_at_ms(metadata))
         return None
 
+    async def enqueue_turn_open(
+        self, params: TurnEnqueueParams
+    ) -> TurnEnqueueResponse | None:
+        """Enqueue through this Host's adapter for the session; None when this
+        Host does not hold it open. The plugin session RPC channel reaches a
+        session this way.
+        """
+        adapter = self._adapters.get(params.session_id)
+        if adapter is None or adapter._closed:
+            return None
+        result = await adapter.enqueue_turn(params)
+        # The harness schedules the queue drain after the response goes out;
+        # the plugin RPC channel has no client to answer, so run it here.
+        if result.after_response is not None:
+            result.after_response()
+        return result.response
+
+    def _revoke_plugin_session_rpc(
+        self, adapter: UnifiedHarnessBackendAdapter | None, session_id: str
+    ) -> None:
+        """Drop the loopback token a closed session's plugin MCP servers hold."""
+        rpc = adapter._context.plugin_session_rpc if adapter is not None else None
+        if rpc is not None:
+            rpc.revoke_session(session_id)
+
     async def _archive_stored(
         self, params: SessionArchiveParams
     ) -> SessionArchiveResponse:
@@ -5287,6 +5316,7 @@ class UnifiedHarnessBackendHostAdapter:  # noqa: PLR0904 - implements app-server
             adapter = self._adapters.pop(params.session_id, None)
             if adapter is not None:
                 self._telemetry_clients.discard(adapter._telemetry)
+                self._revoke_plugin_session_rpc(adapter, params.session_id)
                 await adapter.shutdown()
         return EmptyResponse()
 
@@ -5600,6 +5630,7 @@ class UnifiedHarnessBackendHostAdapter:  # noqa: PLR0904 - implements app-server
                 adapter._cancel_model_catalog_task()
                 adapter._cancel_registry_sync()
                 adapter._emit_session_closed_telemetry()
+                self._revoke_plugin_session_rpc(adapter, adapter.session_id)
                 if adapter._relocation_trust_root is not None:
                     adapter._context.harness_files.trust_store.revoke_session_trust(
                         adapter._relocation_trust_root
@@ -5909,6 +5940,7 @@ class UnifiedHarnessBackendHostAdapter:  # noqa: PLR0904 - implements app-server
     ) -> None:
         if self._adapters.get(previous_session_id) is adapter:
             self._adapters.pop(previous_session_id)
+            self._revoke_plugin_session_rpc(adapter, previous_session_id)
         self._adapters[session_id] = adapter
 
     # Called per lifecycle entry point rather than from
@@ -6646,12 +6678,18 @@ class UnifiedHarnessBackendHostAdapter:  # noqa: PLR0904 - implements app-server
         async def republish(session_id: str, _bound: SessionPlugins) -> None:
             if context.plugin_provider.bound(session_id) is not None:
                 return
+            if context.plugin_session_rpc is not None:
+                # The session id exists now: arm the loopback channel before
+                # the catalog this bind republishes is handed to the runtime.
+                await context.plugin_session_rpc.ensure_started()
             self._publish_mcp_catalog(
                 context,
                 merge_plugin_mcp_into_catalog(
                     await _configured_mcp_catalog(context),
                     context.plugin_mcp,
                     authentication=context.mcp_authentication,
+                    session_id=session_id,
+                    plugin_rpc=context.plugin_session_rpc,
                 ),
             )
 

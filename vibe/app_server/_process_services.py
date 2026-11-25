@@ -24,6 +24,7 @@ from vibe.app_server._model_catalog_service import ModelCatalogService
 from vibe.app_server._open_sessions import OpenSessions
 from vibe.app_server._org_config_service import OrgConfigService
 from vibe.app_server._platform_credential_lenders import PlatformCredentialLenders
+from vibe.app_server._plugin_session_rpc import PluginSessionRPC
 from vibe.app_server._skill_shadows import ShadowWarnings
 from vibe.app_server._skill_store_cleanup import SkillStoreCleanup
 from vibe.app_server._storage_usage import StorageUsageService
@@ -65,6 +66,9 @@ class ProcessServices:
     platform_credential_lenders: PlatformCredentialLenders
     # Turns an earlier process left mid-flight, resumed once per owner.
     left_turns: LeftTurns
+    # The loopback channel a plugin's MCP server uses to enqueue a turn on the
+    # session it is bound to (issue #1422).
+    plugin_session_rpc: PluginSessionRPC
 
     def __post_init__(self) -> None:
         self.org_config.on_changed(lambda _key: self.config_changes.publish())
@@ -74,6 +78,7 @@ class ProcessServices:
     def create(cls) -> ProcessServices:
         """The production services; an entry point calls this once."""
         background = BackgroundWorker()
+        open_sessions = OpenSessions()
         return cls(
             org_config=OrgConfigService(),
             connector_catalog=SharedConnectorCatalog(),
@@ -85,7 +90,7 @@ class ProcessServices:
             skill_shadows=ShadowWarnings(),
             missing_models=MissingModelWarnings(),
             skill_store=SkillStoreCleanup(background),
-            open_sessions=OpenSessions(),
+            open_sessions=open_sessions,
             storage_usage=StorageUsageService(background),
             model_catalog=ModelCatalogService(),
             config_changes=ConfigChanges(),
@@ -95,6 +100,7 @@ class ProcessServices:
             ),
             platform_credential_lenders=PlatformCredentialLenders(),
             left_turns=LeftTurns(),
+            plugin_session_rpc=PluginSessionRPC(open_sessions),
         )
 
     async def close(self) -> None:
@@ -108,6 +114,7 @@ class ProcessServices:
             await self.mcp_discovery.close()
             await self.storage_usage.close()
             await self.model_catalog.close()
+            await self.plugin_session_rpc.close()
         finally:
             await self.background.close()
 

@@ -18,7 +18,12 @@ import contextlib
 import logging
 from typing import Protocol
 
-from vibe.app_server.protocol import SessionArchiveParams, SessionArchiveResponse
+from vibe.app_server.protocol import (
+    SessionArchiveParams,
+    SessionArchiveResponse,
+    TurnEnqueueParams,
+    TurnEnqueueResponse,
+)
 
 
 class OpenSessionHost(Protocol):
@@ -26,6 +31,14 @@ class OpenSessionHost(Protocol):
         self, params: SessionArchiveParams
     ) -> SessionArchiveResponse | None:
         """None when this Host does not hold the session open."""
+        ...
+
+    async def enqueue_turn_open(
+        self, params: TurnEnqueueParams
+    ) -> TurnEnqueueResponse | None:
+        """Enqueue a turn on the session the params name; None when this Host
+        does not hold it open.
+        """
         ...
 
     async def reload_config_files(self) -> None:
@@ -77,6 +90,18 @@ class OpenSessions:
         """
         for host in tuple(self._hosts):
             response = await host.archive_open(params)
+            if response is not None:
+                return response
+        return None
+
+    async def enqueue_turn(
+        self, params: TurnEnqueueParams
+    ) -> TurnEnqueueResponse | None:
+        """Enqueued through the Host that holds the session open; None when
+        none does.
+        """
+        for host in tuple(self._hosts):
+            response = await host.enqueue_turn_open(params)
             if response is not None:
                 return response
         return None
